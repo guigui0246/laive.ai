@@ -85,7 +85,7 @@ class AI:
         sources = search(question, faiss_index, self.chunk_pipe)
 
         prompt = (
-            "## PLEASE ANSWER THE QUESTION USING THE SOURCES ##\n\n" +
+            "## PLEASE ANSWER THE QUESTION IN FRENCH USING THE SOURCES ##\n\n" +
             "NEW SOURCE:" + "\n\nNEW SOURCE:".join(sources) + "\n\nQUESTION:" + question
         )
 
