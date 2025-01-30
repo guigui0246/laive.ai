@@ -26,7 +26,7 @@ def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> tuple[str
 
 def search(question: str, faiss_index: Any, chunk_pipe: Any) -> list[str]:
     encoded_question = np.array(chunk_pipe([question])).astype("float32")
-    index = faiss_index.search(encoded_question, 5)[1][1]
+    index = faiss_index.search(encoded_question, 5)[1][0]
     return [chunk_text("\n\n".join(SOURCES))[i] for i in index]
 
 
