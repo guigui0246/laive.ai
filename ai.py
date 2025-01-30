@@ -80,7 +80,7 @@ class AI:
         encoded_sources = np.array(self.chunk_pipe(sources_chunk)).astype("float32")
 
         faiss_index = faiss.IndexFlatIP(encoded_sources.shape[1])
-        faiss_index.add(encoded_sources, np.arange(len(encoded_sources)).astype("int64"))  # type: ignore
+        faiss_index.add(encoded_sources)  # type: ignore
 
         sources = search(question, faiss_index, self.chunk_pipe)
 
@@ -165,6 +165,7 @@ def add(source: str | list[str] | IO[str]) -> None:
 
 
 def unload() -> str:
+    AI.instances.clear()
     return "AI model unloaded successfully"
 
 
