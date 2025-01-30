@@ -1,22 +1,33 @@
-from threading import Thread
+import asyncio
+from functools import lru_cache
 from typing import IO, Any, overload
-from transformers import pipeline, AutoModelForCausalLM  # type: ignore
+import numpy as np
+import torch
+from transformers import pipeline  # type: ignore
+from sentence_transformers import SentenceTransformer
+import faiss  # type: ignore
+import nest_asyncio  # type: ignore
 
 
 SOURCES: list[str] = []
 
 
-class AIWrapper:
-    def __init__(self, ai: 'AI', question: str) -> None:
-        self.result: Any = None
-        self.thread: Thread = Thread(target=ai.__call__, args=[question, self], daemon=True)
-        self.thread.start()
+nest_asyncio.apply()  # type: ignore
 
-    def is_alive(self) -> bool:
-        return self.thread.is_alive()
 
-    def __bool__(self) -> bool:
-        return self.result is not None
+@lru_cache(None)
+def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> tuple[str, ...]:
+    words = text.split()
+    chunks: list[str] = []
+    for i in range(0, len(words), chunk_size - overlap):
+        chunks.append(" ".join(words[i:i + chunk_size]))
+    return tuple(chunks)
+
+
+def search(question: str, faiss_index: Any, chunk_pipe: Any) -> list[str]:
+    encoded_question = np.array(chunk_pipe([question])).astype("float32")
+    index = faiss_index.search(encoded_question, 5)[1][1]
+    return [chunk_text("\n\n".join(SOURCES))[i] for i in index]
 
 
 class AI:
@@ -31,38 +42,68 @@ class AI:
         #     device_map="auto"
         # )
 
-        self.pipe: Any = pipeline(
-            "document-question-answering",
-            model="impira/layoutlm-document-qa",
-            trust_remote_code=True
+        # self.pipe: Any = pipeline(
+        #     "document-question-answering",
+        #     model="impira/layoutlm-document-qa",
+        #     trust_remote_code=True,
+        #     device_map="auto"
+        # )
+
+        # self.pipe: Any = pipeline(
+        #     "text2text-generation",
+        #     model="google/flan-t5-large",
+        #     trust_remote_code=True,
+        #     device_map="auto",
+        #     torch_dtype=torch.bfloat16
+        # )
+
+        self.question_pipe: Any = pipeline(
+            "text2text-generation",
+            model="google/flan-t5-base",
+            trust_remote_code=True,
+            device_map="auto",
+            torch_dtype=torch.bfloat16
         )
+
+        self.chunk_pipe: Any = SentenceTransformer("all-MiniLM-L6-v2").encode  # type: ignore
 
         AI.instances.append(self)
 
-    async def run(self, question: str) -> Any:
-        return self.pipe({
-            "role": "user",
-            "content": question
-        })
+    async def run(self, question: str) -> str:
+        # return self.pipe({
+        #     "role": "user",
+        #     "content": prompt
+        # })[0]["generated_text"]
 
-    async def __call__(self, question: str, save_obj: AIWrapper) -> Any:
-        save_obj.result = await self.run(question)
+        sources_chunk = chunk_text("\n\n".join(SOURCES))
+
+        encoded_sources = np.array(self.chunk_pipe(sources_chunk)).astype("float32")
+
+        faiss_index = faiss.IndexFlatIP(encoded_sources.shape[1])
+        faiss_index.add(encoded_sources, np.arange(len(encoded_sources)).astype("int64"))  # type: ignore
+
+        sources = search(question, faiss_index, self.chunk_pipe)
+
+        prompt = (
+            "## PLEASE ANSWER THE QUESTION USING THE SOURCES ##\n\n" +
+            "NEW SOURCE:" + "\n\nNEW SOURCE:".join(sources) + "\n\nQUESTION:" + question
+        )
+
+        return self.question_pipe(prompt)[0]["generated_text"]
+
+    async def __call__(self, question: str) -> str:
+        return await self.run(question)
 
     @staticmethod
-    def get_response(question: str, sources: list[str]) -> str:
-        t: list[AIWrapper] = []
-        prompt = (
-            "## PLEASE ANSWER THE QUESTION USING THE SOURCES ##" +
-            "NEW SOURCE:" + "NEW SOURCE:".join(sources) + "QUESTION:" + question
-        )
+    async def get_response(question: str) -> str:
+        threads: list[asyncio.Task[str]] = []
         for i in AI.instances:
-            t.append(AIWrapper(i, prompt))
-        test = any(a for a in t if a.is_alive())
-        while test:
-            for i in t:
-                if not i.is_alive():
-                    return i.result
-        raise ValueError("No response")
+            threads.append(asyncio.create_task(i(question)))
+        done, pending = await asyncio.wait(threads, return_when=asyncio.FIRST_COMPLETED)
+        res = "\n\n".join([e.result() for e in done])
+        for t in pending:
+            t.cancel()
+        return res
 
 
 def load(key: str = "") -> None:
@@ -72,12 +113,15 @@ def load(key: str = "") -> None:
     AI()
 
 
-def ask(question: str) -> str:
+def ask(question: str, print: IO[str] | None = None) -> str:
     """Ask the AI a question
     @param question: str - The question to ask
     @return str - The response
     """
-    return AI.get_response(question, SOURCES)
+    result = asyncio.run(AI.get_response(question))
+    if print:
+        print.write(result)
+    return result
 
 
 @overload
@@ -108,7 +152,11 @@ def add(source: str | list[str] | IO[str]) -> None:
     """Add a source to the AI informations
     @param source: str | list[str] - The source or list of sources to add
     """
-    if isinstance(source, IO):
+    try:
+        source = str(source.read())  # type: ignore
+    except AttributeError:
+        pass
+    if isinstance(source, IO):  # is never true, present for linters
         source = source.read()
     if isinstance(source, list):
         SOURCES.extend(source)
