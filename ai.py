@@ -49,9 +49,17 @@ class AI:
         #     device_map="auto"
         # )
 
-        # self.pipe: Any = pipeline(
+        # self.question_pipe: Any = pipeline(
         #     "text2text-generation",
         #     model="google/flan-t5-large",
+        #     trust_remote_code=True,
+        #     device_map="auto",
+        #     torch_dtype=torch.bfloat16
+        # )omni-research/Tarsier-7b
+
+        # self.question_pipe: Any = pipeline(
+        #     "text2text-generation",
+        #     model="google/flan-t5-base",
         #     trust_remote_code=True,
         #     device_map="auto",
         #     torch_dtype=torch.bfloat16
@@ -59,7 +67,7 @@ class AI:
 
         self.question_pipe: Any = pipeline(
             "text2text-generation",
-            model="google/flan-t5-base",
+            model="teapotai/teapotllm",
             trust_remote_code=True,
             device_map="auto",
             torch_dtype=torch.bfloat16
@@ -85,7 +93,7 @@ class AI:
         sources = search(question, faiss_index, self.chunk_pipe)
 
         prompt = (
-            "## PLEASE ANSWER THE QUESTION IN FRENCH USING THE SOURCES ##\n\n" +
+            "## please answer the question in french using the sources ##\n\n" +
             "NEW SOURCE:" + "\n\nNEW SOURCE:".join(sources) + "\n\nQUESTION:" + question
         )
 
