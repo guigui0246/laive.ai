@@ -1,17 +1,20 @@
+import ast
 import asyncio
 from functools import lru_cache
 from os import PathLike
-import pytesseract
+import openai.pagination
+import pytesseract  # type: ignore
 from PIL import Image
 from pathlib import Path
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path  # type: ignore
 from typing import IO, Any, overload
 import numpy as np
-import torch
-from transformers import pipeline  # type: ignore
+import torch  # type: ignore # noqa: F401
+from transformers import pipeline  # type: ignore # noqa: F401
 from sentence_transformers import SentenceTransformer
 import faiss  # type: ignore
 import nest_asyncio  # type: ignore
+import openai
 
 
 SOURCES: list[str] = []
@@ -32,10 +35,29 @@ def search(question: str, faiss_index: Any, chunk_pipe: Any) -> list[str]:
     return [chunk_text("\n\n".join(SOURCES))[i] for i in index]
 
 
+def copilot_generate(prompt: str, client: openai.Client, assistant_id: str) -> str:
+    thread = client.beta.threads.create()
+    client.beta.threads.messages.create(  # type: ignore
+        thread_id=thread.id,
+        role="user",
+        content=prompt
+    )
+    run = client.beta.threads.runs.create_and_poll(
+        thread_id=thread.id,
+        assistant_id=assistant_id,
+    )
+    while run.status != "completed":
+        pass
+    response: openai.pagination.SyncCursorPage[Any] = client.beta.threads.messages.list(
+        thread_id=thread.id,
+    )
+    return response.data[0].content[0]
+
+
 class AI:
     instances: list["AI"] = []
 
-    def __init__(self) -> None:
+    def __init__(self, key_file: PathLike[str] | str | None = None) -> None:
         # This one does not support the latest version of transformers (see README.md)
         # self.pipe: Any = pipeline(
         #     "text-generation",
@@ -67,13 +89,33 @@ class AI:
         #     torch_dtype=torch.bfloat16
         # )
 
-        self.question_pipe: Any = pipeline(
-            "text2text-generation",
-            model="teapotai/teapotllm",
-            trust_remote_code=True,
-            device_map="auto",
-            torch_dtype=torch.bfloat16
+        # self.question_pipe: Any = pipeline(
+        #     "text2text-generation",
+        #     model="teapotai/teapotllm",
+        #     trust_remote_code=True,
+        #     device_map="auto",
+        #     torch_dtype=torch.bfloat16
+        # )
+
+        if key_file is None:
+            key_file = Path("openai.key")
+
+        with open(key_file) as f:
+            client = openai.OpenAI(
+                api_key=f.read().strip()
+            )
+
+        assistant = client.beta.assistants.create(  # type: ignore
+            model="gpt-4-turbo",
+            instructions="You are an AI assistant answering questions in french. You do not have internet access",
+            tools=[{'type': 'file_search'}],
+            name="AI Assistant",
         )
+
+        def generate(prompt: str) -> list[dict[str, str]]:
+            return [{"generated_text": copilot_generate(prompt, client, assistant.id)}]
+
+        self.question_pipe: Any = generate
 
         self.chunk_pipe: Any = SentenceTransformer("all-MiniLM-L6-v2").encode  # type: ignore
 
@@ -96,11 +138,11 @@ class AI:
         print(sources)
 
         prompt = (
-            "## please answer the question in french using the sources ##\n" +
-            "QUESTION:" + question + "\n\nNEW SOURCE:" + "\n\nNEW SOURCE:".join(sources)
+            # "## please answer the question in french using the sources ##\n" +
+            "CONTEXT:\nNEW SOURCE:" + "\nNEW SOURCE:".join(sources) + "\n\nQUESTION:" + question
         )
 
-        return self.question_pipe(prompt)[0]["generated_text"]
+        return str(ast.literal_eval(f"\"\"\"{self.question_pipe(prompt)[0]["generated_text"].text.value}\"\"\""))
 
     async def __call__(self, question: str) -> str:
         return await self.run(question)
@@ -121,7 +163,7 @@ def load(key: str = "") -> None:
     """Load the AI model
     @param key: str - The API key if required
     """
-    AI()
+    AI(key)
 
 
 def ask(question: str, print: IO[str] | None = None) -> str:
@@ -178,12 +220,12 @@ def add(source: str | list[str] | IO[str] | PathLike[str]) -> None:
         if path.suffix.lower() == ".pdf":
             try:
                 images = convert_from_path(path)
-                source = "\n".join([pytesseract.image_to_string(image) for image in images])
+                source = "\n".join([pytesseract.image_to_string(image) for image in images])  # type: ignore
             except Exception as e:
                 print(f"Error reading PDF {path}: {e}")
         elif path.suffix.lower() in [".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"]:
             try:
-                source = str(pytesseract.image_to_string(Image.open(path)))
+                source = str(pytesseract.image_to_string(Image.open(path)))  # type: ignore
             except Exception as e:
                 print(f"Error reading image {path}: {e}")
         else:
@@ -192,7 +234,7 @@ def add(source: str | list[str] | IO[str] | PathLike[str]) -> None:
             except Exception as e:
                 print(f"Error reading file {path}: {e}")
 
-    SOURCES.append(source)
+    SOURCES.append(source)  # type: ignore
 
 
 def unload() -> str:
