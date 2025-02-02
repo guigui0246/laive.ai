@@ -1,4 +1,3 @@
-import ast
 import asyncio
 from functools import lru_cache
 from os import PathLike
@@ -9,8 +8,6 @@ from pathlib import Path
 from pdf2image import convert_from_path  # type: ignore
 from typing import IO, Any, overload
 import numpy as np
-import torch  # type: ignore # noqa: F401
-from transformers import pipeline  # type: ignore # noqa: F401
 from sentence_transformers import SentenceTransformer
 import faiss  # type: ignore
 import nest_asyncio  # type: ignore
@@ -33,6 +30,16 @@ def search(question: str, faiss_index: Any, chunk_pipe: Any) -> list[str]:
     encoded_question = np.array(chunk_pipe([question])).astype("float32")
     index = faiss_index.search(encoded_question, 5)[1][0]
     return [chunk_text("\n\n".join(SOURCES))[i] for i in index]
+
+
+def parse(text: str) -> str:
+    text = text.replace("\\t", "\t")
+    text = text.replace("\\n", "\n")
+    text = text.replace("\\r", "\r")
+    text = text.replace("\\'", "'")
+    text = text.replace('\\"', '"')
+    text = text.replace("\\\\", "\\")
+    return text
 
 
 def copilot_generate(prompt: str, client: openai.Client, assistant_id: str) -> str:
@@ -135,14 +142,13 @@ class AI:
         faiss_index.add(encoded_sources)  # type: ignore
 
         sources = search(question, faiss_index, self.chunk_pipe)
-        print(sources)
 
         prompt = (
             # "## please answer the question in french using the sources ##\n" +
             "CONTEXT:\nNEW SOURCE:" + "\nNEW SOURCE:".join(sources) + "\n\nQUESTION:" + question
         )
 
-        return str(ast.literal_eval(f"\"\"\"{self.question_pipe(prompt)[0]["generated_text"].text.value}\"\"\""))
+        return parse(self.question_pipe(prompt)[0]["generated_text"].text.value)
 
     async def __call__(self, question: str) -> str:
         return await self.run(question)
