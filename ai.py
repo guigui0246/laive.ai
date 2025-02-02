@@ -128,20 +128,23 @@ class AI:
 
         AI.instances.append(self)
 
-    async def run(self, question: str) -> str:
+    async def run(self, question: str, ignore_filtering: bool = False) -> str:
         # return self.pipe({
         #     "role": "user",
         #     "content": prompt
         # })[0]["generated_text"]
 
-        sources_chunk = chunk_text("\n\n".join(SOURCES))
+        if not ignore_filtering:
+            sources_chunk = chunk_text("\n\n".join(SOURCES))
 
-        encoded_sources = np.array(self.chunk_pipe(sources_chunk)).astype("float32")
+            encoded_sources = np.array(self.chunk_pipe(sources_chunk)).astype("float32")
 
-        faiss_index = faiss.IndexFlatIP(encoded_sources.shape[1])
-        faiss_index.add(encoded_sources)  # type: ignore
+            faiss_index = faiss.IndexFlatIP(encoded_sources.shape[1])
+            faiss_index.add(encoded_sources)  # type: ignore
 
-        sources = search(question, faiss_index, self.chunk_pipe)
+            sources = search(question, faiss_index, self.chunk_pipe)
+        else:
+            sources = SOURCES
 
         prompt = (
             # "## please answer the question in french using the sources ##\n" +
@@ -150,14 +153,14 @@ class AI:
 
         return parse(self.question_pipe(prompt)[0]["generated_text"].text.value)
 
-    async def __call__(self, question: str) -> str:
-        return await self.run(question)
+    async def __call__(self, question: str, ignore_filtering: bool = False) -> str:
+        return await self.run(question, ignore_filtering)
 
     @staticmethod
-    async def get_response(question: str) -> str:
+    async def get_response(question: str, ignore_filtering: bool = False) -> str:
         threads: list[asyncio.Task[str]] = []
         for i in AI.instances:
-            threads.append(asyncio.create_task(i(question)))
+            threads.append(asyncio.create_task(i(question, ignore_filtering)))
         done, pending = await asyncio.wait(threads, return_when=asyncio.FIRST_COMPLETED)
         res = "\n\n".join([e.result() for e in done])
         for t in pending:
@@ -172,14 +175,16 @@ def load(key: str = "") -> None:
     AI(key)
 
 
-def ask(question: str, print: IO[str] | None = None) -> str:
+def ask(question: str, print: IO[str] | None = None, ignore_filtering: bool = False) -> str:
     """Ask the AI a question
     @param question: str - The question to ask
     @return str - The response
     """
-    result = asyncio.run(AI.get_response(question))
+    result = asyncio.run(AI.get_response(question, ignore_filtering))
     if print:
         print.write(result)
+        print.write("\n")
+        print.flush()
     return result
 
 
@@ -226,17 +231,19 @@ def add(source: str | list[str] | IO[str] | PathLike[str]) -> None:
         if path.suffix.lower() == ".pdf":
             try:
                 images = convert_from_path(path)
-                source = "\n".join([pytesseract.image_to_string(image) for image in images])  # type: ignore
+                source = "file" + str(path) + "\n".join([
+                    f"page {id}:" + pytesseract.image_to_string(image) for id, image in enumerate(images)  # type: ignore
+                ])
             except Exception as e:
                 print(f"Error reading PDF {path}: {e}")
         elif path.suffix.lower() in [".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"]:
             try:
-                source = str(pytesseract.image_to_string(Image.open(path)))  # type: ignore
+                source = "file" + str(path) + str(pytesseract.image_to_string(Image.open(path)))  # type: ignore
             except Exception as e:
                 print(f"Error reading image {path}: {e}")
         else:
             try:
-                source = path.read_text(encoding="utf-8")
+                source = "file" + str(path) + path.read_text(encoding="utf-8")
             except Exception as e:
                 print(f"Error reading file {path}: {e}")
 
