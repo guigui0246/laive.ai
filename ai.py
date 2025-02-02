@@ -1,5 +1,10 @@
 import asyncio
 from functools import lru_cache
+from os import PathLike
+import pytesseract
+from PIL import Image
+from pathlib import Path
+from pdf2image import convert_from_path
 from typing import IO, Any, overload
 import numpy as np
 import torch
@@ -16,12 +21,9 @@ nest_asyncio.apply()  # type: ignore
 
 
 @lru_cache(None)
-def chunk_text(text: str, chunk_size: int = 512, overlap: int = 50) -> tuple[str, ...]:
-    words = text.split()
-    chunks: list[str] = []
-    for i in range(0, len(words), chunk_size - overlap):
-        chunks.append(" ".join(words[i:i + chunk_size]))
-    return tuple(chunks)
+def chunk_text(text: str) -> tuple[str, ...]:
+    words = text.split(".\n\n")
+    return tuple(words)
 
 
 def search(question: str, faiss_index: Any, chunk_pipe: Any) -> list[str]:
@@ -91,10 +93,11 @@ class AI:
         faiss_index.add(encoded_sources)  # type: ignore
 
         sources = search(question, faiss_index, self.chunk_pipe)
+        print(sources)
 
         prompt = (
-            "## please answer the question in french using the sources ##\n\n" +
-            "NEW SOURCE:" + "\n\nNEW SOURCE:".join(sources) + "\n\nQUESTION:" + question
+            "## please answer the question in french using the sources ##\n" +
+            "QUESTION:" + question + "\n\nNEW SOURCE:" + "\n\nNEW SOURCE:".join(sources)
         )
 
         return self.question_pipe(prompt)[0]["generated_text"]
@@ -156,7 +159,7 @@ def add(source: IO[str]) -> None:
     ...
 
 
-def add(source: str | list[str] | IO[str]) -> None:
+def add(source: str | list[str] | IO[str] | PathLike[str]) -> None:
     """Add a source to the AI informations
     @param source: str | list[str] - The source or list of sources to add
     """
@@ -169,6 +172,26 @@ def add(source: str | list[str] | IO[str]) -> None:
     if isinstance(source, list):
         SOURCES.extend(source)
         return
+
+    path = Path(source)
+    if path.exists():
+        if path.suffix.lower() == ".pdf":
+            try:
+                images = convert_from_path(path)
+                source = "\n".join([pytesseract.image_to_string(image) for image in images])
+            except Exception as e:
+                print(f"Error reading PDF {path}: {e}")
+        elif path.suffix.lower() in [".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif"]:
+            try:
+                source = str(pytesseract.image_to_string(Image.open(path)))
+            except Exception as e:
+                print(f"Error reading image {path}: {e}")
+        else:
+            try:
+                source = path.read_text(encoding="utf-8")
+            except Exception as e:
+                print(f"Error reading file {path}: {e}")
+
     SOURCES.append(source)
 
 
